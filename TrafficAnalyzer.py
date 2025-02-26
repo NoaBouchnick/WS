@@ -1,741 +1,605 @@
-def generate_protocol_comparison_chart(self, plots_dir):
-    """Generate a dedicated QUIC vs TCP vs UDP comparison chart"""
-    print("Generating protocol comparison chart...")
+#!/usr/bin/env python3
+"""
+Network Traffic Analyzer
+------------------------
+Analyzes PCAP files to compare network traffic characteristics of different applications:
+- Web browsers (Chrome, Edge)
+- Audio streaming (Spotify)
+- Video streaming (YouTube)
+- Video conferencing (Zoom)
 
-    # Create data for chart
-    app_names = list(self.results.keys())
-    tcp_counts = []
-    udp_counts = []
-    quic_counts = []
-    tls_counts = []
+Required packages:
+- scapy
+- pandas
+- matplotlib
+- seaborn
+- numpy
+"""
 
-    for app in app_names:
-        total_packets = len(self.results[app]['packet_sizes'])
-
-        # Count TCP packets
-        tcp_count = self.results[app]['protocols'].get(6, 0)
-        tcp_counts.append(tcp_count)
-
-        # Count UDP packets
-        udp_count = self.results[app]['protocols'].get(17, 0)
-        udp_counts.append(udp_count)
-
-        # Count QUIC packets
-        quic_count = self.results[app]['protocols'].get('QUIC', 0)
-        quic_counts.append(quic_count)
-
-        # Count TLS packets
-        tls_count = len(self.results[app]['tls_headers'])
-        tls_counts.append(tls_count)
-
-    # Create stacked bar chart
-    plt.figure(figsize=(12, 8))
-
-    x = np.arange(len(app_names))
-    width = 0.6
-
-    # Stack the protocols
-    plt.bar(x, tcp_counts, width, label='TCP', color='blue')
-    plt.bar(x, udp_counts, width, bottom=tcp_counts, label='UDP', color='green')
-    plt.bar(x, quic_counts, width, bottom=[t + u for t, u in zip(tcp_counts, udp_counts)],
-            label='QUIC', color='purple')
-    plt.bar(x, tls_counts, width, label='TLS', color='red', alpha=0.5)
-
-    plt.xlabel('Application', fontsize=12)
-    plt.ylabel('Packet Count', fontsize=12)
-    plt.title('Protocol Usage Comparison', fontsize=14)
-    plt.xticks(x, app_names, rotation=45)
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(plots_dir / 'protocol_usage_comparison.png', dpi=300)
-    plt.close()
-
-    # Create percentage chart
-    plt.figure(figsize=(12, 8))
-
-    # Calculate percentages
-    total_packets = [len(self.results[app]['packet_sizes']) for app in app_names]
-    tcp_pct = [100 * t / tot if tot > 0 else 0 for t, tot in zip(tcp_counts, total_packets)]
-    udp_pct = [100 * u / tot if tot > 0 else 0 for u, tot in zip(udp_counts, total_packets)]
-    quic_pct = [100 * q / tot if tot > 0 else 0 for q, tot in zip(quic_counts, total_packets)]
-    tls_pct = [100 * t / tot if tot > 0 else 0 for t, tot in zip(tls_counts, total_packets)]
-
-    # Create a grouped bar chart
-    x = np.arange(len(app_names))
-    width = 0.2
-
-    plt.bar(x - 1.5 * width, tcp_pct, width, label='TCP', color='blue')
-    plt.bar(x - 0.5 * width, udp_pct, width, label='UDP', color='green')
-    plt.bar(x + 0.5 * width, quic_pct, width, label='QUIC', color='purple')
-    plt.bar(x + 1.5 * width, tls_pct, width, label='TLS', color='red')
-
-    plt.xlabel('Application', fontsize=12)
-    plt.ylabel('Percentage of Total Packets', fontsize=12)
-    plt.title('Protocol Usage Percentages', fontsize=14)
-    plt.xticks(x, app_names, rotation=45)
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(plots_dir / 'protocol_percentage_chart.png', dpi=300)
-    plt.close()
-    from scapy.all import *
-
-
+from scapy.all import rdpcap
+from scapy.layers.inet import IP, TCP, UDP
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from collections import defaultdict
 import numpy as np
-from datetime import datetime
-from scapy.layers.inet import TCP, IP, UDP
-from scapy.layers.tls.record import TLS
-from scapy.layers.http import HTTP
-import logging
-import warnings
 import os
+from collections import defaultdict
+
+# Setup visualization style
+plt.style.use('ggplot')
+sns.set_palette("tab10")
 
 
 class TrafficAnalyzer:
     def __init__(self, pcap_dir):
         self.pcap_dir = pcap_dir
         self.results = {}
-        self.app_names = []
 
-        # הגדרת logging
-        logging.basicConfig(level=logging.ERROR)
-        # התעלמות מאזהרות
-        warnings.filterwarnings("ignore")
-        # השתקת אזהרות ספציפיות של scapy
-        logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+    def analyze_pcaps(self):
+        """Analyze all PCAP files in directory"""
+        pcap_files = []
+        for ext in ['*.pcap', '*.pcapng']:
+            pcap_files.extend(list(Path(self.pcap_dir).glob(ext)))
 
-    def analyze_ip_header(self, ip_packet):
-        """Extract IP header fields from packet"""
-        return {
-            'version': ip_packet.version,
-            'ihl': ip_packet.ihl,
-            'tos': ip_packet.tos,
-            'len': ip_packet.len,
-            'id': ip_packet.id,
-            'flags': ip_packet.flags,
-            'ttl': ip_packet.ttl,
-            'proto': ip_packet.proto
-        }
-
-    def analyze_tcp_header(self, tcp_packet):
-        """Extract TCP header fields from packet"""
-        return {
-            'sport': tcp_packet.sport,
-            'dport': tcp_packet.dport,
-            'seq': tcp_packet.seq,
-            'ack': tcp_packet.ack,
-            'window': tcp_packet.window,
-            'flags': str(tcp_packet.flags)
-        }
-
-    def analyze_tls_header(self, packet):
-        """Extract TLS header fields if present"""
-        tls_info = {}
-        try:
-            if TLS in packet:
-                tls = packet[TLS]
-                # Extract available TLS fields
-                if hasattr(tls, 'type'):
-                    tls_info['type'] = tls.type
-                if hasattr(tls, 'version'):
-                    tls_info['version'] = tls.version
-                if hasattr(tls, 'len'):
-                    tls_info['len'] = tls.len
-        except Exception:
-            # Ignore TLS parsing errors
-            pass
-        return tls_info
-
-    def analyze_pcap(self, pcap_file):
-        """Analyze a single PCAP file"""
-        print(f"Analyzing {pcap_file}...")
-        try:
-            packets = rdpcap(pcap_file)
-
-            analysis = {
-                'ip_headers': [],
-                'tcp_headers': [],
-                'tls_headers': [],
-                'packet_sizes': [],
-                'inter_arrival_times': [],
-                'timestamps': [],
-                'protocols': defaultdict(int),
-                'ip_fields': {
-                    'ttl': [],
-                    'version': [],
-                    'ihl': [],
-                    'tos': [],
-                    'len': [],
-                    'id': [],
-                    'flags': [],
-                    'proto': []
-                },
-                'tcp_fields': {
-                    'sport': [],
-                    'dport': [],
-                    'window': [],
-                    'flags': defaultdict(int)
-                },
-                'tls_fields': {
-                    'type': defaultdict(int),
-                    'version': defaultdict(int)
-                }
-            }
-
-            prev_time = None
-
-            for packet in packets:
-                try:
-                    if IP not in packet:
-                        continue
-
-                    ip = packet[IP]
-                    pkt_time = float(packet.time)
-                    pkt_size = len(packet)
-
-                    # Update times and sizes
-                    analysis['packet_sizes'].append(pkt_size)
-                    analysis['timestamps'].append(pkt_time)
-
-                    if prev_time:
-                        analysis['inter_arrival_times'].append(pkt_time - prev_time)
-                    prev_time = pkt_time
-
-                    # Analyze IP header
-                    ip_info = self.analyze_ip_header(ip)
-                    analysis['ip_headers'].append(ip_info)
-                    analysis['protocols'][ip_info['proto']] += 1
-
-                    # Store specific IP fields
-                    for field, value in ip_info.items():
-                        if field in analysis['ip_fields']:
-                            analysis['ip_fields'][field].append(value)
-
-                    # Analyze TCP if present
-                    if TCP in packet:
-                        tcp = packet[TCP]
-                        tcp_info = self.analyze_tcp_header(tcp)
-                        analysis['tcp_headers'].append(tcp_info)
-
-                        # Store specific TCP fields
-                        for field, value in tcp_info.items():
-                            if field in analysis['tcp_fields'] and field != 'flags':
-                                analysis['tcp_fields'][field].append(value)
-
-                        # Count flag combinations
-                        analysis['tcp_fields']['flags'][tcp_info['flags']] += 1
-
-                    # Analyze UDP if present (for completeness)
-                    if UDP in packet:
-                        analysis['protocols']['UDP'] += 1
-                        udp = packet[UDP]
-
-                        # Check for QUIC protocol (UDP port 443)
-                        if udp.dport == 443 or udp.sport == 443:
-                            analysis['protocols']['QUIC'] += 1
-
-                    # Analyze TLS if present
-                    if TLS in packet:
-                        tls_info = self.analyze_tls_header(packet)
-                        if tls_info:
-                            analysis['tls_headers'].append(tls_info)
-                            analysis['protocols']['TLS'] += 1
-
-                            # Store TLS fields
-                            if 'type' in tls_info:
-                                analysis['tls_fields']['type'][tls_info['type']] += 1
-                            if 'version' in tls_info:
-                                analysis['tls_fields']['version'][tls_info['version']] += 1
-
-                except Exception as e:
-                    print(f"Error processing packet: {str(e)}")
-                    continue
-
-            return analysis
-
-        except Exception as e:
-            print(f"Error reading file {pcap_file}: {str(e)}")
-            return None
-
-    def run_analysis(self):
-        """Run analysis on all PCAP files in the directory"""
-        pcap_files = list(Path(self.pcap_dir).glob('*.pcap*'))
+        if not pcap_files:
+            print(f"No PCAP files found in {self.pcap_dir}")
+            return False
 
         for pcap_file in pcap_files:
             app_name = pcap_file.stem
-            self.app_names.append(app_name)
-            analysis = self.analyze_pcap(str(pcap_file))
-            if analysis:
-                self.results[app_name] = analysis
+            print(f"Analyzing {app_name}...")
 
-        # Generate plots directory if it doesn't exist
+            try:
+                # Read packets and extract data
+                packets = rdpcap(str(pcap_file))
+                data = self._extract_features(packets)
+                self.results[app_name] = data
+            except Exception as e:
+                print(f"Error analyzing {app_name}: {e}")
+
+        return bool(self.results)
+
+    def _extract_features(self, packets):
+        """Extract features from packet list, focusing on requirements A, B, C, D"""
+        data = {
+            # D. Packet sizes
+            'packet_size': [],
+
+            # A. IP header fields
+            'ip': {
+                'ttl': [],
+                'ihl': [],
+                'tos': [],
+                'flags': defaultdict(int)
+            },
+
+            # B. TCP header fields
+            'tcp': {
+                'window_size': [],
+                'flags': defaultdict(int),
+                'options': defaultdict(int)
+            },
+
+            # C. TLS header fields (limited without decryption)
+            'tls': {
+                'count': 0
+            },
+
+            # Extra useful information
+            'protocols': {'TCP': 0, 'UDP': 0, 'TLS': 0, 'QUIC': 0},
+            'direction': {'in': 0, 'out': 0},
+            'inter_arrival': []
+        }
+
+        prev_time = None
+
+        for pkt in packets:
+            if IP not in pkt:
+                continue
+
+            # Basic IP features - A. IP header fields
+            ip = pkt[IP]
+            time = float(pkt.time)
+            size = len(pkt)
+
+            # D. Packet sizes
+            data['packet_size'].append(size)
+
+            # A. IP header fields
+            data['ip']['ttl'].append(ip.ttl)
+            data['ip']['ihl'].append(ip.ihl)
+            data['ip']['tos'].append(ip.tos)
+
+            # IP flags
+            flag_str = str(ip.flags) if hasattr(ip, 'flags') else 'None'
+            data['ip']['flags'][flag_str] += 1
+
+            # Traffic direction
+            if ip.src.startswith(('192.168.', '10.', '172.')):
+                data['direction']['out'] += 1
+            else:
+                data['direction']['in'] += 1
+
+            # Inter-arrival time
+            if prev_time:
+                data['inter_arrival'].append(time - prev_time)
+            prev_time = time
+
+            # Protocol counting
+            if ip.proto == 6:  # TCP
+                data['protocols']['TCP'] += 1
+
+                # B. TCP header fields
+                if TCP in pkt:
+                    tcp = pkt[TCP]
+                    data['tcp']['window_size'].append(tcp.window)
+
+                    # TCP flags
+                    flags = []
+                    if tcp.flags.S: flags.append("SYN")
+                    if tcp.flags.A: flags.append("ACK")
+                    if tcp.flags.F: flags.append("FIN")
+                    if tcp.flags.P: flags.append("PSH")
+                    if tcp.flags.R: flags.append("RST")
+
+                    flag_str = " ".join(flags)
+                    if flag_str:
+                        data['tcp']['flags'][flag_str] += 1
+
+                    # TCP options
+                    if tcp.options:
+                        for opt in tcp.options:
+                            opt_name = opt[0] if isinstance(opt, tuple) else opt
+                            data['tcp']['options'][str(opt_name)] += 1
+
+                    # C. TLS detection (simplified approach)
+                    if tcp.dport == 443 or tcp.sport == 443:
+                        data['protocols']['TLS'] += 1
+                        data['tls']['count'] += 1
+
+            elif ip.proto == 17:  # UDP
+                data['protocols']['UDP'] += 1
+
+                # QUIC detection (modern HTTP/3)
+                if UDP in pkt:
+                    udp = pkt[UDP]
+                    if (udp.dport == 443 or udp.sport == 443) and size > 40:
+                        data['protocols']['QUIC'] += 1
+
+        return data
+
+    def create_visualizations(self):
+        """Generate all visualizations that meet the requirements"""
         plots_dir = Path(self.pcap_dir) / 'plots'
         plots_dir.mkdir(exist_ok=True)
 
-        # Generate all plots
-        self.generate_ip_header_plots(plots_dir)
-        self.generate_tcp_header_plots(plots_dir)
-        self.generate_tls_header_plots(plots_dir)
-        self.generate_packet_size_plots(plots_dir)
-        self.generate_comparative_plots(plots_dir)
+        print("Generating visualizations...")
 
-        # Generate specialized protocol comparison chart
-        self.generate_protocol_comparison_chart(plots_dir)
+        # Create summary dataframe
+        summary_df = self._create_summary()
+        summary_df.to_csv(plots_dir / 'summary.csv')
 
-    def generate_ip_header_plots(self, plots_dir):
-        """Generate plots for IP header fields"""
-        print("Generating IP header field plots...")
+        # A. IP header fields plots (improved versions)
+        self._plot_ip_ttl_values(plots_dir)
+        self._plot_ip_header_length(plots_dir)
 
-        # TTL Distribution
-        self.create_comparison_boxplot(
-            [self.results[app]['ip_fields']['ttl'] for app in self.results],
-            self.results.keys(),
-            'IP TTL Distribution',
-            'TTL Value',
-            plots_dir / 'ip_ttl_comparison.png'
-        )
+        # B. TCP header fields plots
+        self._plot_tcp_window_size(plots_dir)
+        self._plot_tcp_flags(plots_dir)
 
-        # Protocol Distribution
-        plt.figure(figsize=(12, 8))
-        proto_data = {}
+        # C. TLS information
+        self._plot_tls_usage(plots_dir)
 
-        # Convert protocol numbers to names
-        proto_names = {1: 'ICMP', 2: 'IGMP', 6: 'TCP', 17: 'UDP', 58: 'ICMPv6'}
+        # D. Packet size plots (improved version)
+        self._plot_packet_sizes(plots_dir)
 
-        for app in self.results:
-            proto_counts = defaultdict(int)
-            for proto in self.results[app]['ip_fields']['proto']:
-                proto_name = proto_names.get(proto, str(proto))
-                proto_counts[proto_name] += 1
-            proto_data[app] = proto_counts
+        # Additional useful plots
+        self._plot_protocols(plots_dir)
+        self._plot_traffic_direction(plots_dir)
 
-        # Create bar chart
-        apps = list(self.results.keys())
-        all_protos = sorted(set().union(*[proto_data[app].keys() for app in apps]))
+        print(f"Analysis complete! Results saved to {plots_dir}")
 
-        x = np.arange(len(apps))
-        width = 0.8 / len(all_protos)
+    def _create_summary(self):
+        """Create summary statistics dataframe"""
+        data = []
 
-        plt.figure(figsize=(14, 8))
-        for i, proto in enumerate(all_protos):
-            values = [proto_data[app].get(proto, 0) for app in apps]
-            plt.bar(x + i * width, values, width, label=proto)
-
-        plt.xlabel('Application')
-        plt.ylabel('Packet Count')
-        plt.title('IP Protocol Distribution')
-        plt.xticks(x + width * len(all_protos) / 2 - width / 2, apps, rotation=45)
-        plt.legend(title='Protocol')
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'ip_protocol_distribution.png')
-        plt.close()
-
-        # IP Header Length (IHL) Distribution
-        self.create_comparison_boxplot(
-            [self.results[app]['ip_fields']['ihl'] for app in self.results],
-            self.results.keys(),
-            'IP Header Length Distribution',
-            'IHL (32-bit words)',
-            plots_dir / 'ip_ihl_comparison.png'
-        )
-
-    def generate_tcp_header_plots(self, plots_dir):
-        """Generate plots for TCP header fields"""
-        print("Generating TCP header field plots...")
-
-        # TCP Window Size Distribution
-        self.create_comparison_boxplot(
-            [self.results[app]['tcp_fields']['window'] for app in self.results],
-            self.results.keys(),
-            'TCP Window Size Distribution',
-            'Window Size',
-            plots_dir / 'tcp_window_comparison.png'
-        )
-
-        # TCP Port Distribution (top 5 ports)
-        plt.figure(figsize=(14, 8))
-        for i, app in enumerate(self.results):
-            ports = self.results[app]['tcp_fields']['dport']
-            if not ports:
+        for app, features in self.results.items():
+            total = len(features['packet_size'])
+            if not total:
                 continue
 
-            # Count port frequencies
-            port_counts = defaultdict(int)
-            for port in ports:
-                port_counts[port] += 1
-
-            # Get top 5 ports
-            top_ports = sorted(port_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-
-            # Create subplot
-            plt.subplot(len(self.results), 1, i + 1)
-            top_port_names = [str(port) for port, _ in top_ports]
-            top_port_counts = [count for _, count in top_ports]
-
-            plt.barh(top_port_names, top_port_counts)
-            plt.title(f'Top 5 Destination Ports for {app}')
-            plt.xlabel('Packet Count')
-            plt.ylabel('Port')
-
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'tcp_dport_distribution.png')
-        plt.close()
-
-        # TCP Flags Distribution
-        plt.figure(figsize=(14, 10))
-        flag_data = {}
-
-        for app in self.results:
-            flag_data[app] = dict(self.results[app]['tcp_fields']['flags'])
-
-        # Create bar chart
-        apps = list(self.results.keys())
-        all_flags = sorted(set().union(*[flag_data[app].keys() for app in apps]))
-
-        x = np.arange(len(apps))
-        width = 0.8 / len(all_flags) if all_flags else 0.8
-
-        for i, flag in enumerate(all_flags):
-            values = [flag_data[app].get(flag, 0) for app in apps]
-            plt.bar(x + i * width, values, width, label=flag)
-
-        plt.xlabel('Application')
-        plt.ylabel('Packet Count')
-        plt.title('TCP Flags Distribution')
-        plt.xticks(x + width * len(all_flags) / 2 - width / 2, apps, rotation=45)
-        plt.legend(title='Flags', loc='upper right')
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'tcp_flags_distribution.png')
-        plt.close()
-
-    def generate_tls_header_plots(self, plots_dir):
-        """Generate plots for TLS header fields"""
-        print("Generating TLS header field plots...")
-
-        # TLS Version Distribution
-        plt.figure(figsize=(14, 8))
-        version_data = {}
-
-        # TLS version names
-        tls_versions = {
-            0x0301: 'TLS 1.0',
-            0x0302: 'TLS 1.1',
-            0x0303: 'TLS 1.2',
-            0x0304: 'TLS 1.3'
-        }
-
-        for app in self.results:
-            version_counts = defaultdict(int)
-            for version, count in self.results[app]['tls_fields']['version'].items():
-                version_name = tls_versions.get(version, f'Unknown (0x{version:04x})')
-                version_counts[version_name] += count
-            version_data[app] = version_counts
-
-        # Create bar chart
-        apps = list(self.results.keys())
-        all_versions = sorted(set().union(*[version_data[app].keys() for app in apps]))
-
-        x = np.arange(len(apps))
-        width = 0.8 / len(all_versions) if all_versions else 0.8
-
-        for i, version in enumerate(all_versions):
-            values = [version_data[app].get(version, 0) for app in apps]
-            plt.bar(x + i * width, values, width, label=version)
-
-        plt.xlabel('Application')
-        plt.ylabel('Packet Count')
-        plt.title('TLS Version Distribution')
-        plt.xticks(x + width * len(all_versions) / 2 - width / 2, apps, rotation=45)
-        plt.legend(title='TLS Version')
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'tls_version_distribution.png')
-        plt.close()
-
-        # TLS Type Distribution
-        plt.figure(figsize=(14, 8))
-        type_data = {}
-
-        # TLS record type names
-        tls_types = {
-            20: 'Change Cipher Spec',
-            21: 'Alert',
-            22: 'Handshake',
-            23: 'Application Data'
-        }
-
-        for app in self.results:
-            type_counts = defaultdict(int)
-            for type_val, count in self.results[app]['tls_fields']['type'].items():
-                type_name = tls_types.get(type_val, f'Unknown ({type_val})')
-                type_counts[type_name] += count
-            type_data[app] = type_counts
-
-        # Create bar chart
-        all_types = sorted(set().union(*[type_data[app].keys() for app in apps]))
-
-        x = np.arange(len(apps))
-        width = 0.8 / len(all_types) if all_types else 0.8
-
-        for i, type_name in enumerate(all_types):
-            values = [type_data[app].get(type_name, 0) for app in apps]
-            plt.bar(x + i * width, values, width, label=type_name)
-
-        plt.xlabel('Application')
-        plt.ylabel('Packet Count')
-        plt.title('TLS Record Type Distribution')
-        plt.xticks(x + width * len(all_types) / 2 - width / 2, apps, rotation=45)
-        plt.legend(title='TLS Record Type')
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'tls_type_distribution.png')
-        plt.close()
-
-        # TLS Usage Comparison (TLS vs non-TLS)
-        plt.figure(figsize=(12, 8))
-
-        tls_ratio = []
-        for app in self.results:
-            tls_count = len(self.results[app]['tls_headers'])
-            total_count = len(self.results[app]['packet_sizes'])
-            ratio = (tls_count / total_count) * 100 if total_count > 0 else 0
-            tls_ratio.append(ratio)
-
-        plt.bar(self.results.keys(), tls_ratio)
-        plt.xlabel('Application')
-        plt.ylabel('Percentage of TLS Packets')
-        plt.title('TLS Usage Comparison')
-        plt.ylim(0, 100)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'tls_usage_comparison.png')
-        plt.close()
-
-    def generate_packet_size_plots(self, plots_dir):
-        """Generate plots for packet sizes"""
-        print("Generating packet size plots...")
-
-        # Packet Size Distribution
-        plt.figure(figsize=(14, 10))
-
-        for i, app in enumerate(self.results, 1):
-            plt.subplot(len(self.results), 1, i)
-            sns.histplot(self.results[app]['packet_sizes'], bins=50, kde=True)
-            plt.title(f'Packet Size Distribution - {app}')
-            plt.xlabel('Packet Size (bytes)')
-            plt.ylabel('Count')
-
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'packet_size_distributions.png')
-        plt.close()
-
-        # Packet Size Comparison
-        self.create_comparison_boxplot(
-            [self.results[app]['packet_sizes'] for app in self.results],
-            self.results.keys(),
-            'Packet Size Comparison',
-            'Size (bytes)',
-            plots_dir / 'packet_size_comparison.png'
-        )
-
-        # Packet Size Over Time
-        plt.figure(figsize=(16, 12))
-
-        for i, app in enumerate(self.results, 1):
-            plt.subplot(len(self.results), 1, i)
-
-            timestamps = np.array(self.results[app]['timestamps'])
-            if len(timestamps) > 0:
-                # Normalize to start at 0
-                timestamps = timestamps - timestamps[0]
-
-                plt.scatter(
-                    timestamps,
-                    self.results[app]['packet_sizes'],
-                    s=10,  # smaller point size for better visibility
-                    alpha=0.5  # transparency for overlapping points
-                )
-                plt.title(f'Packet Size Over Time - {app}')
-                plt.xlabel('Time (seconds)')
-                plt.ylabel('Packet Size (bytes)')
-
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'packet_size_over_time.png')
-        plt.close()
-
-    def generate_comparative_plots(self, plots_dir):
-        """Generate comprehensive comparison plots"""
-        print("Generating comparative analysis plots...")
-
-        # Create combined statistics dataframe
-        stats = []
-        for app in self.results:
-            packet_sizes = self.results[app]['packet_sizes']
-            inter_arrival = self.results[app]['inter_arrival_times']
-
-            stats.append({
+            # Calculate summary stats
+            row = {
                 'Application': app,
-                'Total Packets': len(packet_sizes),
-                'Avg Packet Size': np.mean(packet_sizes) if packet_sizes else 0,
-                'Median Packet Size': np.median(packet_sizes) if packet_sizes else 0,
-                'Std Dev Packet Size': np.std(packet_sizes) if packet_sizes else 0,
-                'Avg Inter-arrival Time': np.mean(inter_arrival) * 1000 if inter_arrival else 0,  # to milliseconds
-                'TCP %': (self.results[app]['protocols'][6] / len(packet_sizes) * 100) if packet_sizes else 0,
-                'UDP %': (self.results[app]['protocols'][17] / len(packet_sizes) * 100) if packet_sizes else 0,
-                'TLS %': (len(self.results[app]['tls_headers']) / len(packet_sizes) * 100) if packet_sizes else 0,
-                'QUIC %': (self.results[app]['protocols']['QUIC'] / len(
-                    packet_sizes) * 100) if packet_sizes and 'QUIC' in self.results[app]['protocols'] else 0
+                'Total Packets': total,
+                'Avg Packet Size (bytes)': np.mean(features['packet_size']),
+                'Median Packet Size (bytes)': np.median(features['packet_size']),
+                'IP Header Size (bytes)': np.mean(features['ip']['ihl']) * 4 if features['ip']['ihl'] else 0,
+                'Avg TTL': np.mean(features['ip']['ttl']) if features['ip']['ttl'] else 0,
+                'TCP Window Size': np.mean(features['tcp']['window_size']) if features['tcp']['window_size'] else 0,
+                'TCP %': features['protocols']['TCP'] / total * 100,
+                'UDP %': features['protocols']['UDP'] / total * 100,
+                'TLS %': features['protocols']['TLS'] / total * 100,
+                'QUIC %': features['protocols']['QUIC'] / total * 100,
+                'In %': features['direction']['in'] / total * 100,
+                'Out %': features['direction']['out'] / total * 100,
+            }
+
+            # Add timing if available
+            if features['inter_arrival']:
+                row['Avg Inter-arrival (ms)'] = np.mean(features['inter_arrival']) * 1000
+
+            data.append(row)
+
+        return pd.DataFrame(data)
+
+    def _plot_ip_ttl_values(self, plots_dir):
+        """Plot IP TTL values (improved version)"""
+        ttl_data = []
+
+        for app, features in self.results.items():
+            ttl_values = features['ip']['ttl']
+            if not ttl_values:
+                continue
+
+            # Find most common TTL
+            values, counts = np.unique(ttl_values, return_counts=True)
+            most_common_idx = np.argmax(counts)
+            most_common = values[most_common_idx]
+            percentage = (counts[most_common_idx] / len(ttl_values)) * 100
+
+            ttl_data.append({
+                'Application': app,
+                'Most Common TTL': most_common,
+                'Percentage': percentage
             })
 
-        stats_df = pd.DataFrame(stats)
-
-        # Create a comprehensive comparison chart
-        plt.figure(figsize=(14, 10))
-
-        # Plot key metrics
-        metrics = ['Avg Packet Size', 'Median Packet Size', 'Avg Inter-arrival Time']
-
-        for i, metric in enumerate(metrics, 1):
-            plt.subplot(3, 1, i)
-            plt.bar(stats_df['Application'], stats_df[metric])
-            plt.title(f'Comparison of {metric}')
-            plt.ylabel(metric)
-            plt.xticks(rotation=45)
-
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'comparative_statistics.png')
-        plt.close()
-
-        # Protocol distribution comparison
-        plt.figure(figsize=(14, 8))
-
-        # Create grouped bar chart for protocol percentages
-        protocols = ['TCP %', 'UDP %', 'TLS %']
-        x = np.arange(len(stats_df))
-        width = 0.25
-
-        for i, protocol in enumerate(protocols):
-            plt.bar(x + (i - 1) * width, stats_df[protocol], width, label=protocol)
-
-        plt.title('Protocol Distribution Comparison')
-        plt.xlabel('Application')
-        plt.ylabel('Percentage of Packets')
-        plt.xticks(x, stats_df['Application'], rotation=45)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(plots_dir / 'protocol_percentage_comparison.png')
-        plt.close()
-
-        # Save summary statistics to CSV
-        stats_df.to_csv(plots_dir / 'traffic_comparison_summary.csv', index=False)
-
-        # Save detailed stats for analysis
-        with open(plots_dir / 'detailed_stats.txt', 'w') as f:
-            f.write("Traffic Analysis Summary\n")
-            f.write("=======================\n\n")
-
-            for app in self.results:
-                f.write(f"\n{app} Analysis\n")
-                f.write("-" * 30 + "\n")
-
-                # Basic Statistics
-                packet_sizes = self.results[app]['packet_sizes']
-                total_packets = len(packet_sizes)
-                total_bytes = sum(packet_sizes)
-
-                f.write(f"Total Packets: {total_packets}\n")
-                f.write(f"Total Data: {total_bytes / 1024 / 1024:.2f} MB\n")
-                f.write(f"Average Packet Size: {np.mean(packet_sizes):.2f} bytes\n")
-
-                # Protocol Distribution
-                f.write("\nProtocol Distribution:\n")
-                for proto, count in self.results[app]['protocols'].items():
-                    proto_name = {1: 'ICMP', 2: 'IGMP', 6: 'TCP', 17: 'UDP'}.get(proto, str(proto))
-                    f.write(f"  {proto_name}: {count} packets ({count / total_packets * 100:.2f}%)\n")
-
-                # Flag Distribution for TCP
-                if self.results[app]['tcp_fields']['flags']:
-                    f.write("\nTCP Flag Distribution:\n")
-                    for flag, count in sorted(self.results[app]['tcp_fields']['flags'].items(),
-                                              key=lambda x: x[1], reverse=True):
-                        f.write(f"  {flag}: {count} packets\n")
-
-                # TLS Information
-                tls_count = len(self.results[app]['tls_headers'])
-                if tls_count > 0:
-                    f.write(f"\nTLS Usage: {tls_count} packets ({tls_count / total_packets * 100:.2f}%)\n")
-
-                    # TLS Version Distribution
-                    if self.results[app]['tls_fields']['version']:
-                        f.write("\nTLS Version Distribution:\n")
-                        for version, count in sorted(self.results[app]['tls_fields']['version'].items()):
-                            version_name = {
-                                0x0301: 'TLS 1.0',
-                                0x0302: 'TLS 1.1',
-                                0x0303: 'TLS 1.2',
-                                0x0304: 'TLS 1.3'
-                            }.get(version, f'Unknown (0x{version:04x})')
-                            f.write(f"  {version_name}: {count} packets\n")
-
-                f.write("\n" + "=" * 50 + "\n")
-
-    def create_comparison_boxplot(self, data_list, labels, title, ylabel, save_path):
-        """Helper to create boxplot comparisons"""
-        plt.figure(figsize=(12, 8))
-
-        # Filter out empty datasets
-        valid_data = []
-        valid_labels = []
-        for d, label in zip(data_list, labels):
-            if d and len(d) > 0:  # Check if the data list is not empty
-                valid_data.append(d)
-                valid_labels.append(label)
-
-        if not valid_data:
-            print(f"Warning: No valid data for {title}")
+        if not ttl_data:
             return
 
-        # Create boxplot
-        bp = plt.boxplot(valid_data, labels=valid_labels, patch_artist=True)
+        # Create DataFrame
+        df = pd.DataFrame(ttl_data)
 
-        # Change colors to make boxplots more visible
-        for box in bp['boxes']:
-            box.set(color='blue', linewidth=2)
-            box.set(facecolor='lightblue')
-        for whisker in bp['whiskers']:
-            whisker.set(color='blue', linewidth=2)
-        for cap in bp['caps']:
-            cap.set(color='blue', linewidth=2)
-        for median in bp['medians']:
-            median.set(color='red', linewidth=2)
-        for flier in bp['fliers']:
-            flier.set(marker='o', color='black', alpha=0.7)
+        plt.figure(figsize=(12, 7))
 
-        plt.title(title, fontsize=14)
-        plt.ylabel(ylabel, fontsize=12)
-        plt.xlabel('Application', fontsize=12)
-        plt.xticks(rotation=45, fontsize=10)
-        plt.grid(True, linestyle='--', alpha=0.7)
+        # Simple bar chart for most common TTL
+        bars = plt.bar(df['Application'], df['Most Common TTL'], color='lightgreen')
+
+        # Add percentage labels
+        for i, (_, row) in enumerate(df.iterrows()):
+            plt.text(i, row['Most Common TTL'] + 1,
+                     f"TTL: {row['Most Common TTL']:.0f}\n({row['Percentage']:.1f}%)",
+                     ha='center')
+
+        plt.title('Most Common TTL Values by Application')
+        plt.ylabel('TTL Value')
+        plt.grid(axis='y', alpha=0.3)
+        plt.xticks(rotation=30, ha='right')
         plt.tight_layout()
-        plt.savefig(save_path, dpi=300)  # Higher resolution
+
+        plt.savefig(plots_dir / 'ip_ttl_values.png', dpi=300)
         plt.close()
+
+    def _plot_ip_header_length(self, plots_dir):
+        """Plot IP Header Length (improved version)"""
+        # Collect average IHL values for each application
+        avg_ihl_data = []
+
+        for app, features in self.results.items():
+            ihl_values = features['ip']['ihl']
+            if not ihl_values:
+                continue
+
+            # Calculate the average IHL and convert to bytes
+            avg_ihl = np.mean(ihl_values)
+            byte_size = avg_ihl * 4  # IHL is in 4-byte units
+
+            # Calculate the percentage of standard IHL (5)
+            values, counts = np.unique(ihl_values, return_counts=True)
+            percentages = {}
+            for val, count in zip(values, counts):
+                percentages[val] = (count / len(ihl_values)) * 100
+
+            # Get percentage of standard IHL=5 (if present)
+            std_pct = percentages.get(5.0, 0)
+
+            avg_ihl_data.append({
+                'Application': app,
+                'Average IHL': avg_ihl,
+                'Header Size (bytes)': byte_size,
+                'Standard IHL %': std_pct
+            })
+
+        if not avg_ihl_data:
+            return
+
+        # Create DataFrame for the averages
+        avg_df = pd.DataFrame(avg_ihl_data)
+
+        # Plot simple bar chart with average values
+        plt.figure(figsize=(12, 7))
+
+        bars = plt.bar(avg_df['Application'], avg_df['Header Size (bytes)'], color='lightblue')
+
+        # Add information labels with more detail
+        for i, row in avg_df.iterrows():
+            plt.text(i, row['Header Size (bytes)'] + 0.3,
+                     f"Avg IHL: {row['Average IHL']:.2f}\n({row['Standard IHL %']:.1f}% standard)",
+                     ha='center', va='bottom', fontsize=9)
+
+        plt.title('IP Header Length by Application', fontsize=14)
+        plt.ylabel('Header Size (bytes)', fontsize=12)
+        plt.xticks(rotation=30, ha='right')
+        plt.grid(axis='y', alpha=0.3)
+
+        # Add explanation of IHL
+        plt.figtext(0.5, 0.01,
+                    "Standard IP header (IHL=5) is 20 bytes. Higher values indicate use of IP options.",
+                    ha='center', fontsize=10,
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
+
+        plt.tight_layout(rect=[0, 0.05, 1, 0.95])  # Make room for the explanation
+        plt.savefig(plots_dir / 'ip_header_length.png', dpi=300)
+        plt.close()
+
+    def _plot_tcp_window_size(self, plots_dir):
+        """Plot TCP Window Size (improved version)"""
+        window_data = []
+
+        for app, features in self.results.items():
+            win_sizes = features['tcp']['window_size']
+            if not win_sizes or len(win_sizes) < 10:
+                continue
+
+            window_data.append({
+                'Application': app,
+                'Mean Window Size': np.mean(win_sizes)
+            })
+
+        if not window_data:
+            return
+
+        # Create DataFrame
+        df = pd.DataFrame(window_data)
+
+        # Sort by window size
+        df = df.sort_values('Mean Window Size', ascending=False)
+
+        plt.figure(figsize=(12, 7))
+
+        # Simple bar chart
+        bars = plt.bar(df['Application'], df['Mean Window Size'], color='skyblue')
+
+        # Add formatted value labels
+        for i, v in enumerate(df['Mean Window Size']):
+            if v < 1000:
+                formatted = f"{v:.0f}"
+            elif v < 1000000:
+                formatted = f"{v / 1000:.1f}K"
+            else:
+                formatted = f"{v / 1000000:.1f}M"
+
+            plt.text(i, v * 1.02, formatted, ha='center')
+
+        plt.title('Average TCP Window Size by Application')
+        plt.ylabel('Window Size (bytes)')
+        plt.grid(axis='y', alpha=0.3)
+        plt.xticks(rotation=30, ha='right')
+        plt.tight_layout()
+
+        plt.savefig(plots_dir / 'tcp_window_size.png', dpi=300)
+        plt.close()
+
+    def _plot_tcp_flags(self, plots_dir):
+        """Plot TCP Flags Distribution"""
+        tcp_flags_data = []
+        for app, features in self.results.items():
+            if not features['tcp']['flags']:
+                continue
+
+            total_tcp = features['protocols']['TCP']
+            if total_tcp == 0:
+                continue
+
+            # Get top flags
+            top_flags = sorted(features['tcp']['flags'].items(),
+                               key=lambda x: x[1], reverse=True)[:3]
+
+            for flag, count in top_flags:
+                tcp_flags_data.append({
+                    'Application': app,
+                    'TCP Flag': flag,
+                    'Percentage': count / total_tcp * 100
+                })
+
+        if tcp_flags_data:
+            df = pd.DataFrame(tcp_flags_data)
+
+            plt.figure(figsize=(12, 8))
+            ax = sns.barplot(data=df, x='Percentage', y='TCP Flag', hue='Application')
+
+            plt.title('TCP Flags Distribution by Application')
+            plt.xlabel('Percentage of TCP Packets (%)')
+            plt.grid(axis='x', linestyle='--', alpha=0.5)
+            plt.tight_layout()
+            plt.savefig(plots_dir / 'tcp_flags.png', dpi=300)
+            plt.close()
+
+    def _plot_tls_usage(self, plots_dir):
+        """Plot TLS usage information"""
+        tls_data = []
+        for app, features in self.results.items():
+            total = len(features['packet_size'])
+            if not total:
+                continue
+
+            tls_percentage = features['protocols']['TLS'] / total * 100
+            tls_data.append({
+                'Application': app,
+                'TLS %': tls_percentage
+            })
+
+        if tls_data:
+            df = pd.DataFrame(tls_data)
+            plt.figure(figsize=(10, 6))
+
+            ax = sns.barplot(data=df, x='Application', y='TLS %')
+
+            # Add percentage labels
+            for i, row in df.iterrows():
+                ax.text(i, row['TLS %'] + 1, f"{row['TLS %']:.1f}%", ha='center')
+
+            plt.title('TLS Usage by Application')
+            plt.ylabel('Percentage of TLS Packets (%)')
+            plt.xlabel('Application')
+            plt.xticks(rotation=30, ha='right')
+            plt.grid(axis='y', linestyle='--', alpha=0.5)
+            plt.tight_layout()
+            plt.savefig(plots_dir / 'tls_usage.png', dpi=300)
+            plt.close()
+
+    def _plot_packet_sizes(self, plots_dir):
+        """Plot packet size distributions (improved version)"""
+        # First make a boxplot comparison
+        size_data = []
+        for app, features in self.results.items():
+            # Skip if not enough data
+            if not features['packet_size'] or len(features['packet_size']) < 10:
+                continue
+
+            # Create rows for DataFrame
+            for size in features['packet_size']:
+                size_data.append({
+                    'Application': app,
+                    'Packet Size': size
+                })
+
+        if size_data:
+            df = pd.DataFrame(size_data)
+
+            plt.figure(figsize=(10, 6))
+            ax = sns.boxplot(data=df, x='Application', y='Packet Size', showfliers=False)
+
+            # Add mean markers
+            for i, app in enumerate(df['Application'].unique()):
+                app_sizes = df[df['Application'] == app]['Packet Size']
+                mean_val = app_sizes.mean()
+
+                plt.scatter(i, mean_val, marker='o', color='red', s=40, zorder=3)
+                plt.text(i, mean_val, f'μ={mean_val:.0f}', ha='center', va='bottom')
+
+            plt.title('Packet Size Comparison by Application')
+            plt.ylabel('Packet Size (bytes)')
+            plt.xlabel('Application')
+            plt.xticks(rotation=30, ha='right')
+            plt.grid(axis='y', linestyle='--', alpha=0.5)
+            plt.tight_layout()
+            plt.savefig(plots_dir / 'packet_size_boxplot.png', dpi=300)
+            plt.close()
+
+        # Then make separate distribution plots for each app
+        for app, features in self.results.items():
+            packet_sizes = np.array(features['packet_size'])
+            if len(packet_sizes) < 10:
+                continue
+
+            # Remove extreme outliers
+            packet_sizes = packet_sizes[packet_sizes < np.percentile(packet_sizes, 99)]
+
+            plt.figure(figsize=(10, 6))
+            sns.histplot(packet_sizes, kde=True, bins=20)
+
+            plt.title(f'Packet Size Distribution - {app}')
+            plt.xlabel('Packet Size (bytes)')
+            plt.ylabel('Frequency')
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+
+            # Save each app to a separate file
+            plt.savefig(plots_dir / f'packet_size_dist_{app}.png', dpi=300)
+            plt.close()
+
+    def _plot_protocols(self, plots_dir):
+        """Plot protocol distribution"""
+        data = []
+        for app, features in self.results.items():
+            total = len(features['packet_size'])
+            if not total:
+                continue
+
+            row = {'Application': app}
+            for proto in ['TCP', 'UDP', 'TLS', 'QUIC']:
+                row[proto] = features['protocols'][proto] / total * 100
+            data.append(row)
+
+        if data:
+            df = pd.DataFrame(data)
+            df.set_index('Application', inplace=True)
+
+            plt.figure(figsize=(10, 6))
+            ax = df.plot(kind='bar', figsize=(10, 6), width=0.7)
+
+            # Add percentage labels
+            for container in ax.containers:
+                ax.bar_label(container, fmt='%.1f%%')
+
+            plt.title('Protocol Distribution by Application')
+            plt.ylabel('Percentage of Packets (%)')
+            plt.legend(title='Protocol')
+            plt.grid(axis='y', linestyle='--', alpha=0.5)
+            plt.xticks(rotation=30, ha='right')
+            plt.tight_layout()
+            plt.savefig(plots_dir / 'protocol_distribution.png', dpi=300)
+            plt.close()
+
+    def _plot_traffic_direction(self, plots_dir):
+        """Plot traffic direction (incoming vs outgoing)"""
+        data = []
+        for app, features in self.results.items():
+            total = features['direction']['in'] + features['direction']['out']
+            if not total:
+                continue
+
+            in_pct = features['direction']['in'] / total * 100
+            out_pct = features['direction']['out'] / total * 100
+
+            data.append({
+                'Application': app,
+                'Incoming': in_pct,
+                'Outgoing': out_pct
+            })
+
+        if data:
+            df = pd.DataFrame(data)
+            plt.figure(figsize=(10, 6))
+            ax = df.plot(x='Application', y=['Incoming', 'Outgoing'], kind='bar', stacked=True, width=0.7)
+
+            # Add percentage labels
+            for container in ax.containers:
+                ax.bar_label(container, fmt='%.1f%%')
+
+            plt.title('Traffic Direction by Application')
+            plt.ylabel('Percentage of Packets (%)')
+            plt.legend(title='Direction')
+            plt.grid(axis='y', linestyle='--', alpha=0.5)
+            plt.xticks(rotation=30, ha='right')
+            plt.tight_layout()
+            plt.savefig(plots_dir / 'traffic_direction.png', dpi=300)
+            plt.close()
 
 
 def main():
-    # Use user-specified path or current directory
-    pcap_dir = input("Enter the directory path containing PCAP files (or press Enter to use current directory): ")
-
+    """Main entry point"""
+    pcap_dir = input("Enter path to PCAP directory (or press Enter for current directory): ")
     if not pcap_dir:
         pcap_dir = os.getcwd()
 
     analyzer = TrafficAnalyzer(pcap_dir)
-    analyzer.run_analysis()
-
-    print("Analysis complete! Check the 'plots' directory for visualizations.")
+    if analyzer.analyze_pcaps():
+        analyzer.create_visualizations()
+    else:
+        print("No valid data to analyze")
 
 
 if __name__ == "__main__":
