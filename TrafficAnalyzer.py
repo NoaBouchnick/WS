@@ -498,27 +498,6 @@ class TrafficAnalyzer:
             plt.savefig(plots_dir / 'packet_size_boxplot.png', dpi=300)
             plt.close()
 
-        # Then make separate distribution plots for each app
-        for app, features in self.results.items():
-            packet_sizes = np.array(features['packet_size'])
-            if len(packet_sizes) < 10:
-                continue
-
-            # Remove extreme outliers
-            packet_sizes = packet_sizes[packet_sizes < np.percentile(packet_sizes, 99)]
-
-            plt.figure(figsize=(10, 6))
-            sns.histplot(packet_sizes, kde=True, bins=20)
-
-            plt.title(f'Packet Size Distribution - {app}')
-            plt.xlabel('Packet Size (bytes)')
-            plt.ylabel('Frequency')
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-
-            # Save each app to a separate file
-            plt.savefig(plots_dir / f'packet_size_dist_{app}.png', dpi=300)
-            plt.close()
 
     def _plot_protocols(self, plots_dir):
         """Plot protocol distribution"""
