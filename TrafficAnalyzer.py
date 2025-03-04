@@ -8,6 +8,9 @@ Analyzes PCAP files to compare network traffic characteristics of different appl
 - Video streaming (YouTube)
 - Video conferencing (Zoom)
 
+This tool extracts and visualizes key network characteristics including packet sizes,
+protocol distribution, IP header fields, TCP parameters, and traffic directionality.
+
 Required packages:
 - scapy
 - pandas
@@ -32,12 +35,28 @@ sns.set_palette("tab10")
 
 
 class TrafficAnalyzer:
+    """
+    Analyzes network traffic capture files to extract and visualize key characteristics
+    for comparing different applications' network behaviors.
+    """
+
     def __init__(self, pcap_dir):
+        """
+        Initialize the analyzer with a directory containing PCAP files.
+
+        Args:
+            pcap_dir (str): Path to directory containing PCAP files
+        """
         self.pcap_dir = pcap_dir
         self.results = {}
 
     def analyze_pcaps(self):
-        """Analyze all PCAP files in directory"""
+        """
+        Analyze all PCAP files in the specified directory.
+
+        Returns:
+            bool: True if any valid PCAP files were found and analyzed, False otherwise
+        """
         pcap_files = []
         for ext in ['*.pcap', '*.pcapng']:
             pcap_files.extend(list(Path(self.pcap_dir).glob(ext)))
@@ -61,7 +80,22 @@ class TrafficAnalyzer:
         return bool(self.results)
 
     def _extract_features(self, packets):
-        """Extract features from packet list, focusing on requirements A, B, C, D"""
+        """
+        Extract key features from a list of packets.
+
+        Extracts metrics related to:
+        - IP header fields (TTL, IHL, ToS, flags, addresses)
+        - TCP header fields (window size, flags, options)
+        - Packet sizes
+        - Protocol distribution (TCP, UDP, TLS, QUIC)
+        - Traffic direction
+
+        Args:
+            packets (list): List of scapy packet objects
+
+        Returns:
+            dict: Dictionary containing all extracted metrics
+        """
         data = {
             # D. Packet sizes
             'packet_size': [],
@@ -72,8 +106,8 @@ class TrafficAnalyzer:
                 'ihl': [],
                 'tos': [],
                 'flags': defaultdict(int),
-                'src': defaultdict(int),  # New field to track source IP addresses
-                'dst': defaultdict(int)  # New field to track destination IP addresses
+                'src': defaultdict(int),  # Source IP addresses
+                'dst': defaultdict(int)  # Destination IP addresses
             },
 
             # B. TCP header fields
@@ -83,12 +117,12 @@ class TrafficAnalyzer:
                 'options': defaultdict(int)
             },
 
-            # C. TLS header fields (limited without decryption)
+            # C. TLS header fields
             'tls': {
                 'count': 0
             },
 
-            # Extra useful information
+            # Additional information
             'protocols': {'TCP': 0, 'UDP': 0, 'TLS': 0, 'QUIC': 0},
             'direction': {'in': 0, 'out': 0},
             'inter_arrival': []
@@ -176,7 +210,17 @@ class TrafficAnalyzer:
         return data
 
     def create_visualizations(self):
-        """Generate all visualizations that meet the requirements"""
+        """
+        Generate all visualizations for analyzed PCAP data.
+
+        Creates a 'plots' directory with:
+        - summary.csv: Statistical summary of all metrics
+        - ip_characteristics.png: TTL values and common IP addresses
+        - tcp_window_size.png: TCP window size comparison
+        - packet_size_boxplot.png: Packet size distribution analysis
+        - protocol_distribution.png: Protocol usage breakdown
+        - traffic_direction.png: Incoming vs outgoing traffic ratio
+        """
         plots_dir = Path(self.pcap_dir) / 'plots'
         plots_dir.mkdir(exist_ok=True)
 
@@ -186,13 +230,13 @@ class TrafficAnalyzer:
         summary_df = self._create_summary()
         summary_df.to_csv(plots_dir / 'summary.csv')
 
-        # A. IP header fields plots (improved versions)
-        self._plot_ip_ttl_and_addresses(plots_dir)  # Changed function name
+        # A. IP header fields plots
+        self._plot_ip_ttl_and_addresses(plots_dir)
 
         # B. TCP header fields plots
         self._plot_tcp_window_size(plots_dir)
 
-        # D. Packet size plots (improved version)
+        # D. Packet size plots
         self._plot_packet_sizes(plots_dir)
 
         # Additional useful plots
@@ -202,7 +246,12 @@ class TrafficAnalyzer:
         print(f"Analysis complete! Results saved to {plots_dir}")
 
     def _create_summary(self):
-        """Create summary statistics dataframe"""
+        """
+        Create a summary dataframe with key statistics for each application.
+
+        Returns:
+            pandas.DataFrame: Summary statistics for all applications
+        """
         data = []
 
         for app, features in self.results.items():
@@ -236,7 +285,16 @@ class TrafficAnalyzer:
         return pd.DataFrame(data)
 
     def _plot_ip_ttl_and_addresses(self, plots_dir):
-        """Plot IP TTL values and most common IP addresses"""
+        """
+        Create visualizations for IP TTL values and most common IP addresses.
+
+        Displays two plots side by side:
+        - Left: Most common TTL value for each application with percentage
+        - Right: Most common source and destination IP addresses with percentage
+
+        Args:
+            plots_dir (Path): Directory to save the visualization
+        """
         ip_data = []
 
         for app, features in self.results.items():
@@ -292,8 +350,6 @@ class TrafficAnalyzer:
             ax1.text(i, row['Most Common TTL'] + 1,
                      f"TTL: {row['Most Common TTL']:.0f}\n({row['TTL Percentage']:.1f}%)",
                      ha='center')
-
-        # Removed horizontal reference lines as requested
 
         ax1.set_title('Most Common TTL Values by Application', fontsize=14)
         ax1.set_ylabel('TTL Value', fontsize=12)
@@ -374,7 +430,15 @@ class TrafficAnalyzer:
             plt.close()
 
     def _plot_tcp_window_size(self, plots_dir):
-        """Plot TCP Window Size (improved version)"""
+        """
+        Visualize TCP window size comparison across applications.
+
+        Creates a bar chart showing average TCP window size for each application,
+        with formatted value labels (K/M notation for large values).
+
+        Args:
+            plots_dir (Path): Directory to save the visualization
+        """
         window_data = []
 
         for app, features in self.results.items():
@@ -426,7 +490,16 @@ class TrafficAnalyzer:
         plt.close()
 
     def _plot_packet_sizes(self, plots_dir):
-        """Plot packet size distributions with a creative bar and distribution approach"""
+        """
+        Create comprehensive visualization of packet size distributions.
+
+        Creates a two-panel visualization:
+        - Left: Horizontal bar chart comparing mean and median packet sizes
+        - Right: Stacked bar chart showing packet size distribution by category
+
+        Args:
+            plots_dir (Path): Directory to save the visualization
+        """
         size_data = []
 
         for app, features in self.results.items():
@@ -537,7 +610,15 @@ class TrafficAnalyzer:
         plt.close()
 
     def _plot_protocols(self, plots_dir):
-        """Plot protocol distribution"""
+        """
+        Visualize protocol distribution across applications.
+
+        Creates a bar chart showing percentage of packets using different protocols
+        (TCP, UDP, TLS, QUIC) for each application.
+
+        Args:
+            plots_dir (Path): Directory to save the visualization
+        """
         data = []
         for app, features in self.results.items():
             total = len(features['packet_size'])
@@ -570,7 +651,15 @@ class TrafficAnalyzer:
             plt.close()
 
     def _plot_traffic_direction(self, plots_dir):
-        """Plot traffic direction (incoming vs outgoing)"""
+        """
+        Visualize traffic direction (incoming vs. outgoing) for each application.
+
+        Creates a stacked bar chart showing the percentage of incoming and outgoing
+        traffic for each application.
+
+        Args:
+            plots_dir (Path): Directory to save the visualization
+        """
         data = []
         for app, features in self.results.items():
             total = features['direction']['in'] + features['direction']['out']
@@ -619,7 +708,11 @@ class TrafficAnalyzer:
 
 
 def main():
-    """Main entry point"""
+    """
+    Main entry point for the Traffic Analyzer.
+
+    Prompts user for PCAP directory, analyzes files, and generates visualizations.
+    """
     pcap_dir = input("Enter path to PCAP directory (or press Enter for current directory): ")
     if not pcap_dir:
         pcap_dir = os.getcwd()
