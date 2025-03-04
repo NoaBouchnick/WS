@@ -71,7 +71,9 @@ class TrafficAnalyzer:
                 'ttl': [],
                 'ihl': [],
                 'tos': [],
-                'flags': defaultdict(int)
+                'flags': defaultdict(int),
+                'src': defaultdict(int),  # New field to track source IP addresses
+                'dst': defaultdict(int)  # New field to track destination IP addresses
             },
 
             # B. TCP header fields
@@ -110,6 +112,10 @@ class TrafficAnalyzer:
             data['ip']['ttl'].append(ip.ttl)
             data['ip']['ihl'].append(ip.ihl)
             data['ip']['tos'].append(ip.tos)
+
+            # Track IP addresses
+            data['ip']['src'][ip.src] += 1
+            data['ip']['dst'][ip.dst] += 1
 
             # IP flags
             flag_str = str(ip.flags) if hasattr(ip, 'flags') else 'None'
@@ -181,15 +187,10 @@ class TrafficAnalyzer:
         summary_df.to_csv(plots_dir / 'summary.csv')
 
         # A. IP header fields plots (improved versions)
-        self._plot_ip_ttl_values(plots_dir)
-        self._plot_ip_header_length(plots_dir)
+        self._plot_ip_ttl_and_addresses(plots_dir)  # Changed function name
 
         # B. TCP header fields plots
         self._plot_tcp_window_size(plots_dir)
-        self._plot_tcp_flags(plots_dir)
-
-        # C. TLS information
-        self._plot_tls_usage(plots_dir)
 
         # D. Packet size plots (improved version)
         self._plot_packet_sizes(plots_dir)
@@ -234,114 +235,143 @@ class TrafficAnalyzer:
 
         return pd.DataFrame(data)
 
-    def _plot_ip_ttl_values(self, plots_dir):
-        """Plot IP TTL values (improved version)"""
-        ttl_data = []
+    def _plot_ip_ttl_and_addresses(self, plots_dir):
+        """Plot IP TTL values and most common IP addresses"""
+        ip_data = []
 
         for app, features in self.results.items():
             ttl_values = features['ip']['ttl']
+            src_addresses = features['ip']['src']
+            dst_addresses = features['ip']['dst']
+
             if not ttl_values:
                 continue
 
-            # Find most common TTL
-            values, counts = np.unique(ttl_values, return_counts=True)
-            most_common_idx = np.argmax(counts)
-            most_common = values[most_common_idx]
-            percentage = (counts[most_common_idx] / len(ttl_values)) * 100
+            # Calculate TTL statistics
+            ttl_values_unique, ttl_counts = np.unique(ttl_values, return_counts=True)
+            most_common_idx = np.argmax(ttl_counts)
+            most_common_ttl = ttl_values_unique[most_common_idx]
+            ttl_percentage = (ttl_counts[most_common_idx] / len(ttl_values)) * 100
 
-            ttl_data.append({
+            # Get top source and destination addresses
+            top_src = sorted(src_addresses.items(), key=lambda x: x[1], reverse=True)[:3]
+            top_dst = sorted(dst_addresses.items(), key=lambda x: x[1], reverse=True)[:3]
+
+            # Calculate percentages
+            total_packets = len(ttl_values)
+            top_src_with_pct = [(ip, count, count / total_packets * 100) for ip, count in top_src]
+            top_dst_with_pct = [(ip, count, count / total_packets * 100) for ip, count in top_dst]
+
+            ip_data.append({
                 'Application': app,
-                'Most Common TTL': most_common,
-                'Percentage': percentage
+                'Most Common TTL': most_common_ttl,
+                'TTL Percentage': ttl_percentage,
+                'Top Source IPs': top_src_with_pct,
+                'Top Destination IPs': top_dst_with_pct,
+                'Total Packets': total_packets
             })
 
-        if not ttl_data:
+        if not ip_data:
             return
 
         # Create DataFrame
-        df = pd.DataFrame(ttl_data)
+        df = pd.DataFrame(ip_data)
 
-        plt.figure(figsize=(12, 7))
+        # Create a figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
 
-        # Simple bar chart for most common TTL
-        bars = plt.bar(df['Application'], df['Most Common TTL'], color='lightgreen')
+        # First subplot: TTL values - SIMPLIFIED with uniform color
+        apps = df['Application'].values
+        x = np.arange(len(apps))
 
-        # Add percentage labels
+        # Simple bar chart with consistent color
+        bars1 = ax1.bar(x, df['Most Common TTL'], color='lightgreen')
+
+        # Add percentage labels to TTL bars
         for i, (_, row) in enumerate(df.iterrows()):
-            plt.text(i, row['Most Common TTL'] + 1,
-                     f"TTL: {row['Most Common TTL']:.0f}\n({row['Percentage']:.1f}%)",
+            ax1.text(i, row['Most Common TTL'] + 1,
+                     f"TTL: {row['Most Common TTL']:.0f}\n({row['TTL Percentage']:.1f}%)",
                      ha='center')
 
-        plt.title('Most Common TTL Values by Application')
-        plt.ylabel('TTL Value')
-        plt.grid(axis='y', alpha=0.3)
-        plt.xticks(rotation=30, ha='right')
-        plt.tight_layout()
+        # Removed horizontal reference lines as requested
 
-        plt.savefig(plots_dir / 'ip_ttl_values.png', dpi=300)
-        plt.close()
+        ax1.set_title('Most Common TTL Values by Application', fontsize=14)
+        ax1.set_ylabel('TTL Value', fontsize=12)
+        ax1.grid(axis='y', alpha=0.3)
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(apps, rotation=30, ha='right')
 
-    def _plot_ip_header_length(self, plots_dir):
-        """Plot IP Header Length (improved version)"""
-        # Collect average IHL values for each application
-        avg_ihl_data = []
+        # Second subplot: Common IP Addresses (bar chart)
+        # For each app, show top source and destination IP
+        address_data = []
+        for i, (_, row) in enumerate(df.iterrows()):
+            app = row['Application']
 
-        for app, features in self.results.items():
-            ihl_values = features['ip']['ihl']
-            if not ihl_values:
-                continue
+            # Add top source IP
+            if row['Top Source IPs']:
+                top_src_ip, count, pct = row['Top Source IPs'][0]
+                address_data.append({
+                    'Application': app,
+                    'IP Address': top_src_ip,
+                    'Count': count,
+                    'Percentage': pct,
+                    'Type': 'Source'
+                })
 
-            # Calculate the average IHL and convert to bytes
-            avg_ihl = np.mean(ihl_values)
-            byte_size = avg_ihl * 4  # IHL is in 4-byte units
+            # Add top destination IP
+            if row['Top Destination IPs']:
+                top_dst_ip, count, pct = row['Top Destination IPs'][0]
+                address_data.append({
+                    'Application': app,
+                    'IP Address': top_dst_ip,
+                    'Count': count,
+                    'Percentage': pct,
+                    'Type': 'Destination'
+                })
 
-            # Calculate the percentage of standard IHL (5)
-            values, counts = np.unique(ihl_values, return_counts=True)
-            percentages = {}
-            for val, count in zip(values, counts):
-                percentages[val] = (count / len(ihl_values)) * 100
+        # Create DataFrame for IP addresses
+        addr_df = pd.DataFrame(address_data)
 
-            # Get percentage of standard IHL=5 (if present)
-            std_pct = percentages.get(5.0, 0)
+        if not addr_df.empty:
+            # Group by application and type
+            sns.barplot(data=addr_df, x='Application', y='Percentage', hue='Type', ax=ax2)
 
-            avg_ihl_data.append({
-                'Application': app,
-                'Average IHL': avg_ihl,
-                'Header Size (bytes)': byte_size,
-                'Standard IHL %': std_pct
-            })
+            # Add IP address labels
+            for i, row in addr_df.iterrows():
+                app_idx = np.where(apps == row['Application'])[0][0]
+                offset = -0.2 if row['Type'] == 'Source' else 0.2
 
-        if not avg_ihl_data:
-            return
+                # Format IP for display (shorten if needed)
+                ip_text = row['IP Address']
+                if len(ip_text) > 15:
+                    ip_parts = ip_text.split('.')
+                    if len(ip_parts) == 4:  # IPv4
+                        # Keep first and last octet
+                        ip_text = f"{ip_parts[0]}.{ip_parts[1]}...{ip_parts[3]}"
 
-        # Create DataFrame for the averages
-        avg_df = pd.DataFrame(avg_ihl_data)
+                label_text = f"{ip_text}\n({row['Percentage']:.1f}%)"
+                y_pos = row['Percentage'] + 1
 
-        # Plot simple bar chart with average values
-        plt.figure(figsize=(12, 7))
+                # Add the text label
+                ax2.text(app_idx + offset, y_pos, label_text,
+                         ha='center', va='bottom', fontsize=8, rotation=0)
 
-        bars = plt.bar(avg_df['Application'], avg_df['Header Size (bytes)'], color='lightblue')
+            ax2.set_title('Most Common IP Addresses by Application', fontsize=14)
+            ax2.set_ylabel('Percentage of Packets (%)', fontsize=12)
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(apps, rotation=30, ha='right')
+            ax2.grid(axis='y', alpha=0.3)
 
-        # Add information labels with more detail
-        for i, row in avg_df.iterrows():
-            plt.text(i, row['Header Size (bytes)'] + 0.3,
-                     f"Avg IHL: {row['Average IHL']:.2f}\n({row['Standard IHL %']:.1f}% standard)",
-                     ha='center', va='bottom', fontsize=9)
+            # Add explanation
+            plt.figtext(0.5, 0.01,
+                        "Left: TTL values indicate how many hops a packet can traverse before being discarded.\n"
+                        "Right: Most common source and destination IP addresses for each application.",
+                        ha='center', fontsize=10,
+                        bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
 
-        plt.title('IP Header Length by Application', fontsize=14)
-        plt.ylabel('Header Size (bytes)', fontsize=12)
-        plt.xticks(rotation=30, ha='right')
-        plt.grid(axis='y', alpha=0.3)
-
-        # Add explanation of IHL
-        plt.figtext(0.5, 0.01,
-                    "Standard IP header (IHL=5) is 20 bytes. Higher values indicate use of IP options.",
-                    ha='center', fontsize=10,
-                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
-
-        plt.tight_layout(rect=[0, 0.05, 1, 0.95])  # Make room for the explanation
-        plt.savefig(plots_dir / 'ip_header_length.png', dpi=300)
-        plt.close()
+            plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+            plt.savefig(plots_dir / 'ip_characteristics.png', dpi=300)
+            plt.close()
 
     def _plot_tcp_window_size(self, plots_dir):
         """Plot TCP Window Size (improved version)"""
@@ -368,8 +398,12 @@ class TrafficAnalyzer:
 
         plt.figure(figsize=(12, 7))
 
+        # Get x positions and labels
+        apps = df['Application'].values
+        x = np.arange(len(apps))
+
         # Simple bar chart
-        bars = plt.bar(df['Application'], df['Mean Window Size'], color='skyblue')
+        bars = plt.bar(x, df['Mean Window Size'], color='skyblue')
 
         # Add formatted value labels
         for i, v in enumerate(df['Mean Window Size']):
@@ -385,119 +419,122 @@ class TrafficAnalyzer:
         plt.title('Average TCP Window Size by Application')
         plt.ylabel('Window Size (bytes)')
         plt.grid(axis='y', alpha=0.3)
-        plt.xticks(rotation=30, ha='right')
+        plt.xticks(x, apps, rotation=30, ha='right')
         plt.tight_layout()
 
         plt.savefig(plots_dir / 'tcp_window_size.png', dpi=300)
         plt.close()
 
-    def _plot_tcp_flags(self, plots_dir):
-        """Plot TCP Flags Distribution"""
-        tcp_flags_data = []
-        for app, features in self.results.items():
-            if not features['tcp']['flags']:
-                continue
-
-            total_tcp = features['protocols']['TCP']
-            if total_tcp == 0:
-                continue
-
-            # Get top flags
-            top_flags = sorted(features['tcp']['flags'].items(),
-                               key=lambda x: x[1], reverse=True)[:3]
-
-            for flag, count in top_flags:
-                tcp_flags_data.append({
-                    'Application': app,
-                    'TCP Flag': flag,
-                    'Percentage': count / total_tcp * 100
-                })
-
-        if tcp_flags_data:
-            df = pd.DataFrame(tcp_flags_data)
-
-            plt.figure(figsize=(12, 8))
-            ax = sns.barplot(data=df, x='Percentage', y='TCP Flag', hue='Application')
-
-            plt.title('TCP Flags Distribution by Application')
-            plt.xlabel('Percentage of TCP Packets (%)')
-            plt.grid(axis='x', linestyle='--', alpha=0.5)
-            plt.tight_layout()
-            plt.savefig(plots_dir / 'tcp_flags.png', dpi=300)
-            plt.close()
-
-    def _plot_tls_usage(self, plots_dir):
-        """Plot TLS usage information"""
-        tls_data = []
-        for app, features in self.results.items():
-            total = len(features['packet_size'])
-            if not total:
-                continue
-
-            tls_percentage = features['protocols']['TLS'] / total * 100
-            tls_data.append({
-                'Application': app,
-                'TLS %': tls_percentage
-            })
-
-        if tls_data:
-            df = pd.DataFrame(tls_data)
-            plt.figure(figsize=(10, 6))
-
-            ax = sns.barplot(data=df, x='Application', y='TLS %')
-
-            # Add percentage labels
-            for i, row in df.iterrows():
-                ax.text(i, row['TLS %'] + 1, f"{row['TLS %']:.1f}%", ha='center')
-
-            plt.title('TLS Usage by Application')
-            plt.ylabel('Percentage of TLS Packets (%)')
-            plt.xlabel('Application')
-            plt.xticks(rotation=30, ha='right')
-            plt.grid(axis='y', linestyle='--', alpha=0.5)
-            plt.tight_layout()
-            plt.savefig(plots_dir / 'tls_usage.png', dpi=300)
-            plt.close()
-
     def _plot_packet_sizes(self, plots_dir):
-        """Plot packet size distributions (improved version)"""
-        # First make a boxplot comparison
+        """Plot packet size distributions with a creative bar and distribution approach"""
         size_data = []
+
         for app, features in self.results.items():
             # Skip if not enough data
             if not features['packet_size'] or len(features['packet_size']) < 10:
                 continue
 
-            # Create rows for DataFrame
-            for size in features['packet_size']:
-                size_data.append({
-                    'Application': app,
-                    'Packet Size': size
-                })
+            # Calculate statistics
+            packet_sizes = np.array(features['packet_size'])
+            mean_val = np.mean(packet_sizes)
+            median_val = np.median(packet_sizes)
 
-        if size_data:
-            df = pd.DataFrame(size_data)
+            # Create size bins for better visualization
+            # Create 5 size categories
+            small = np.sum(packet_sizes < 200) / len(packet_sizes) * 100
+            medium_small = np.sum((packet_sizes >= 200) & (packet_sizes < 600)) / len(packet_sizes) * 100
+            medium = np.sum((packet_sizes >= 600) & (packet_sizes < 1000)) / len(packet_sizes) * 100
+            medium_large = np.sum((packet_sizes >= 1000) & (packet_sizes < 1400)) / len(packet_sizes) * 100
+            large = np.sum(packet_sizes >= 1400) / len(packet_sizes) * 100
 
-            plt.figure(figsize=(10, 6))
-            ax = sns.boxplot(data=df, x='Application', y='Packet Size', showfliers=False)
+            size_data.append({
+                'Application': app,
+                'Mean Size': mean_val,
+                'Median Size': median_val,
+                'Small (<200B)': small,
+                'Medium-Small (200-600B)': medium_small,
+                'Medium (600-1000B)': medium,
+                'Medium-Large (1000-1400B)': medium_large,
+                'Large (>1400B)': large,
+                'Total Packets': len(packet_sizes)
+            })
 
-            # Add mean markers
-            for i, app in enumerate(df['Application'].unique()):
-                app_sizes = df[df['Application'] == app]['Packet Size']
-                mean_val = app_sizes.mean()
+        if not size_data:
+            return
 
-                plt.scatter(i, mean_val, marker='o', color='red', s=40, zorder=3)
-                plt.text(i, mean_val, f'μ={mean_val:.0f}', ha='center', va='bottom')
+        # Create DataFrame
+        df = pd.DataFrame(size_data)
 
-            plt.title('Packet Size Comparison by Application')
-            plt.ylabel('Packet Size (bytes)')
-            plt.xlabel('Application')
-            plt.xticks(rotation=30, ha='right')
-            plt.grid(axis='y', linestyle='--', alpha=0.5)
-            plt.tight_layout()
-            plt.savefig(plots_dir / 'packet_size_boxplot.png', dpi=300)
-            plt.close()
+        # Sort by mean size
+        df = df.sort_values('Mean Size', ascending=False)
 
+        # Create a figure with two subplots side by side
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 10), gridspec_kw={'width_ratios': [1, 2]})
+
+        # Get x positions and application names
+        apps = df['Application'].values
+        y_pos = np.arange(len(apps))
+
+        # First subplot: Mean and median size comparison
+        bars = ax1.barh(y_pos, df['Mean Size'], height=0.4, color='steelblue', alpha=0.8, label='Mean Size')
+        ax1.barh(y_pos + 0.4, df['Median Size'], height=0.4, color='lightcoral', alpha=0.8, label='Median Size')
+
+        # Add size labels
+        for i, bar in enumerate(bars):
+            # Add mean label
+            ax1.text(df['Mean Size'].iloc[i] + 20, i, f"{df['Mean Size'].iloc[i]:.0f}B",
+                     va='center', ha='left', color='navy', fontweight='bold')
+            # Add median label
+            ax1.text(df['Median Size'].iloc[i] + 20, i + 0.4, f"{df['Median Size'].iloc[i]:.0f}B",
+                     va='center', ha='left', color='darkred', fontweight='bold')
+            # Add packet count
+            ax1.text(0, i + 0.2, f"Packets: {df['Total Packets'].iloc[i]:,}",
+                     va='center', ha='left', color='black', fontsize=9)
+
+        # Set up the y-axis with application names
+        ax1.set_yticks(y_pos + 0.2)
+        ax1.set_yticklabels(apps)
+
+        # First subplot styling
+        ax1.set_title('Average Packet Sizes by Application', fontsize=15, fontweight='bold')
+        ax1.set_xlabel('Size in Bytes', fontsize=13)
+        ax1.grid(axis='x', linestyle='--', alpha=0.6)
+        ax1.legend(loc='upper right')
+
+        # Second subplot: Size distribution
+        size_categories = ['Small (<200B)', 'Medium-Small (200-600B)', 'Medium (600-1000B)',
+                           'Medium-Large (1000-1400B)', 'Large (>1400B)']
+        colors = ['#E1F5FE', '#81D4FA', '#4FC3F7', '#29B6F6', '#0288D1']  # Blue gradient
+
+        # Create stacked bars for second subplot
+        x_pos = np.arange(len(apps))
+
+        # Create stacked bars
+        bottom = np.zeros(len(df))
+        for i, category in enumerate(size_categories):
+            values = df[category].values
+            b = ax2.bar(x_pos, values, bottom=bottom, label=category, color=colors[i])
+            bottom += values
+
+            # Add percentage labels if significant
+            for j, value in enumerate(values):
+                if value >= 10:  # Only show if at least 10%
+                    text_y = bottom[j] - value / 2
+                    ax2.text(j, text_y, f"{value:.0f}%", ha='center', va='center',
+                             color='black', fontweight='bold')
+
+        # Second subplot styling
+        ax2.set_title('Packet Size Distribution by Category', fontsize=15, fontweight='bold')
+        ax2.set_ylabel('Percentage of Packets', fontsize=13)
+        ax2.set_ylim(0, 100)
+        ax2.set_xticks(x_pos)
+        ax2.set_xticklabels(apps, rotation=30, ha='right')
+        ax2.grid(axis='y', linestyle='--', alpha=0.6)
+        ax2.legend(title='Size Categories', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        plt.tight_layout()
+        plt.savefig(plots_dir / 'packet_size_boxplot.png', dpi=300)
+        plt.close()
 
     def _plot_protocols(self, plots_dir):
         """Plot protocol distribution"""
@@ -551,18 +588,31 @@ class TrafficAnalyzer:
 
         if data:
             df = pd.DataFrame(data)
+            apps = df['Application'].values
+            x = np.arange(len(apps))
+
             plt.figure(figsize=(10, 6))
-            ax = df.plot(x='Application', y=['Incoming', 'Outgoing'], kind='bar', stacked=True, width=0.7)
+
+            # Create the stacked bar chart
+            plt.bar(x, df['Incoming'], width=0.7, label='Incoming', color='#6baed6')
+            plt.bar(x, df['Outgoing'], width=0.7, bottom=df['Incoming'],
+                    label='Outgoing', color='#3182bd')
 
             # Add percentage labels
-            for container in ax.containers:
-                ax.bar_label(container, fmt='%.1f%%')
+            for i, (_, row) in enumerate(df.iterrows()):
+                # Incoming percentage
+                plt.text(i, row['Incoming'] / 2, f"{row['Incoming']:.1f}%",
+                         ha='center', va='center', color='white', fontweight='bold')
+
+                # Outgoing percentage
+                plt.text(i, row['Incoming'] + row['Outgoing'] / 2, f"{row['Outgoing']:.1f}%",
+                         ha='center', va='center', color='white', fontweight='bold')
 
             plt.title('Traffic Direction by Application')
             plt.ylabel('Percentage of Packets (%)')
             plt.legend(title='Direction')
             plt.grid(axis='y', linestyle='--', alpha=0.5)
-            plt.xticks(rotation=30, ha='right')
+            plt.xticks(x, apps, rotation=30, ha='right')
             plt.tight_layout()
             plt.savefig(plots_dir / 'traffic_direction.png', dpi=300)
             plt.close()
