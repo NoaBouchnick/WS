@@ -36,30 +36,30 @@ sns.set_palette("tab10")
 
 def is_tls_payload(payload):
     """
-    בדיקה קפדנית של רשומת TLS לפי קריטריונים דומים לאלה של Wireshark:
-    1. אורך מינימלי של 5 בתים.
-    2. תוכן מסוג TLS – יש לבדוק שהסוג (content type) הוא אחד מהערכים 20, 21, 22, 23.
-    3. גרסת TLS – byte 1 חייב להיות 0x03 וה-byte השני חייב להיות בין 0x00 ל-0x04.
-    4. שדה אורך תקין.
+    Performs strict TLS record detection using criteria similar to Wireshark:
+    1. Minimum length of 5 bytes
+    2. Content type must be one of: 20, 21, 22, 23
+    3. TLS version - byte 1 must be 0x03 and byte 2 must be between 0x00-0x04
+    4. Valid length field
 
     Args:
-        payload (bytes): תוכן ה-Payload של חבילת TCP
+        payload (bytes): TCP packet payload content
 
     Returns:
-        bool: True אם נראית כמו רשומת TLS, אחרת False.
+        bool: True if appears to be a TLS record, False otherwise
     """
     if len(payload) < 5:
         return False
     content_type = payload[0]
     if content_type not in {20, 21, 22, 23}:  # Alert, Handshake, ChangeCipherSpec, Application Data
         return False
-    # בדיקת גרסה – Wireshark מזהה TLS כאשר הגרסה היא 3.x
+    # Version check - Wireshark identifies TLS when version is 3.x
     if payload[1] != 0x03:
         return False
     if payload[2] not in {0x00, 0x01, 0x02, 0x03, 0x04}:
         return False
     record_length = (payload[3] << 8) | payload[4]
-    # בדיקה שהאורך הגיוני – לא אפס וקטן מאורך ה-Payload בפועל
+    # Length must be valid - non-zero and less than actual payload length
     if record_length <= 0 or record_length > (len(payload) - 5):
         return False
     return True
@@ -120,6 +120,7 @@ class TrafficAnalyzer:
         - Packet sizes
         - Protocol distribution (TCP, UDP, TLS, QUIC)
         - Traffic direction
+        - Inter-arrival times
 
         Args:
             packets (list): List of scapy packet objects
@@ -147,19 +148,18 @@ class TrafficAnalyzer:
             },
             'protocols': {'TCP': 0, 'UDP': 0, 'TLS': 0, 'QUIC': 0},
             'direction': {'in': 0, 'out': 0},
-            'inter_arrival': []
+            'inter_arrival': [],
+            'packet_times': []  # Store absolute packet times for timeline visualization
         }
 
         prev_time = None
-        # סט פיירטים של TLS – בשיטה הקודמת נעשה מעקב אחרי handshake.
-        # כאן נבצע בדיקה ישירה על ה-Payload עבור כל חבילת TCP.
-        # הגדרות TLS סטנדרטיות
+        # Standard TLS ports
         tls_ports = {443, 465, 993, 995, 8443}
 
-        # Track QUIC connections remains unchanged
+        # Track QUIC connections
         quic_connections = set()
 
-        # First pass for QUIC detection (TCP לא עוסק ב-TLS כאן)
+        # First pass for QUIC detection
         for pkt in packets:
             if IP not in pkt:
                 continue
@@ -185,6 +185,10 @@ class TrafficAnalyzer:
             ip = pkt[IP]
             time = float(pkt.time)
             size = len(pkt)
+
+            # Store raw packet time for timeline visualization
+            data['packet_times'].append(time)
+
             data['packet_size'].append(size)
             data['ip']['ttl'].append(ip.ttl)
             data['ip']['ihl'].append(ip.ihl)
@@ -201,10 +205,12 @@ class TrafficAnalyzer:
             else:
                 data['direction']['in'] += 1
 
-            if prev_time:
+            # Calculate inter-arrival time
+            if prev_time is not None:
                 data['inter_arrival'].append(time - prev_time)
             prev_time = time
 
+            # TCP protocol analysis
             if ip.proto == 6:  # TCP
                 data['protocols']['TCP'] += 1
                 if TCP in pkt:
@@ -226,15 +232,16 @@ class TrafficAnalyzer:
                             opt_name = opt[0] if isinstance(opt, tuple) else opt
                             data['tcp']['options'][str(opt_name)] += 1
 
-                    # בדיקת TLS: נבדוק רק חבילות עם payload אשר עומד בקריטריונים של is_tls_payload.
+                    # TLS detection: Check payload against TLS criteria
                     if tcp.payload:
                         payload = bytes(tcp.payload)
                         if is_tls_payload(payload):
-                            # אפשר להוסיף בדיקה נוספת - לדוגמה לספור TLS רק אם הפורט הוא פורט סטנדרטי
+                            # Count as TLS only if on standard TLS ports
                             if tcp.dport in tls_ports or tcp.sport in tls_ports:
                                 data['protocols']['TLS'] += 1
                                 data['tls']['count'] += 1
 
+            # UDP protocol analysis
             elif ip.proto == 17:  # UDP
                 data['protocols']['UDP'] += 1
                 if UDP in pkt:
@@ -265,10 +272,17 @@ class TrafficAnalyzer:
         self._plot_packet_sizes(plots_dir)
         self._plot_protocols(plots_dir)
         self._plot_traffic_direction(plots_dir)
+        self._plot_inter_arrival_cdf(plots_dir)
 
         print(f"Analysis complete! Results saved to {plots_dir}")
 
     def _create_summary(self):
+        """
+        Create a summary dataframe with key metrics for each application.
+
+        Returns:
+            pd.DataFrame: Summary statistics for all applications
+        """
         data = []
         for app, features in self.results.items():
             total = len(features['packet_size'])
@@ -295,7 +309,12 @@ class TrafficAnalyzer:
         return pd.DataFrame(data)
 
     def _plot_ip_ttl_and_addresses(self, plots_dir):
-        # ... (הקוד הקיים לא משתנה כאן)
+        """
+        Create visualizations of IP TTL values and most common IP addresses.
+
+        Args:
+            plots_dir (Path): Directory to save the plot
+        """
         ip_data = []
         for app, features in self.results.items():
             ttl_values = features['ip']['ttl']
@@ -387,6 +406,12 @@ class TrafficAnalyzer:
             plt.close()
 
     def _plot_tcp_window_size(self, plots_dir):
+        """
+        Create visualization of TCP window sizes by application.
+
+        Args:
+            plots_dir (Path): Directory to save the plot
+        """
         window_data = []
         for app, features in self.results.items():
             win_sizes = features['tcp']['window_size']
@@ -421,6 +446,12 @@ class TrafficAnalyzer:
         plt.close()
 
     def _plot_packet_sizes(self, plots_dir):
+        """
+        Create visualizations of packet size distributions by application.
+
+        Args:
+            plots_dir (Path): Directory to save the plot
+        """
         size_data = []
         for app, features in self.results.items():
             if not features['packet_size'] or len(features['packet_size']) < 10:
@@ -551,6 +582,89 @@ class TrafficAnalyzer:
             plt.tight_layout()
             plt.savefig(plots_dir / 'traffic_direction.png', dpi=300)
             plt.close()
+
+    def _plot_inter_arrival_cdf(self, plots_dir):
+        """
+        Creates a Cumulative Distribution Function (CDF) plot for inter-arrival times.
+        This visualization makes it easier to compare different applications.
+
+        Args:
+            plots_dir (Path): Directory to save the plot
+        """
+        plt.figure(figsize=(12, 8))
+
+        # Color palette
+        colors = plt.cm.tab10.colors
+
+        # Line styles for better distinction
+        line_styles = ['-', '--', '-.', ':', '-', '--']
+
+        # Check if we have data to plot
+        has_data = False
+
+        # For each application, create CDF
+        for i, (app, features) in enumerate(self.results.items()):
+            # Skip if no inter-arrival times
+            if not features.get('inter_arrival') or len(features['inter_arrival']) < 5:
+                continue
+
+            has_data = True
+
+            # Convert to milliseconds
+            times_ms = np.array(features['inter_arrival']) * 1000
+
+            # Sort times for CDF calculation
+            sorted_times = np.sort(times_ms)
+
+            # Calculate cumulative probabilities
+            p = np.arange(1, len(sorted_times) + 1) / len(sorted_times)
+
+            # Plot CDF
+            plt.plot(
+                sorted_times,
+                p,
+                label=f"{app} (n={len(times_ms)})",
+                color=colors[i % len(colors)],
+                linestyle=line_styles[i % len(line_styles)],
+                linewidth=2
+            )
+
+        if not has_data:
+            plt.close()
+            return
+
+        # Use log scale for x-axis to better show the distribution
+        plt.xscale('log')
+
+        # Configure plot appearance
+        plt.title('Inter-arrival Time Distribution (CDF)', fontsize=16, fontweight='bold')
+        plt.xlabel('Inter-arrival Time (milliseconds, log scale)', fontsize=13)
+        plt.ylabel('Cumulative Probability', fontsize=13)
+        plt.grid(True, which="both", linestyle='--', alpha=0.7)
+
+        # Add legend with application names
+        plt.legend(loc='lower right', fontsize=11)
+
+        # Add vertical lines for common reference points
+        reference_points = [0.01, 0.1, 1, 10, 100]  # 0.01ms, 0.1ms, 1ms, 10ms, 100ms
+        for point in reference_points:
+            plt.axvline(x=point, color='gray', linestyle=':', alpha=0.5)
+
+        # Improve grid
+        plt.minorticks_on()
+        plt.grid(True, which='minor', linestyle=':', alpha=0.2)
+
+        # Add explanatory text
+        plt.figtext(0.5, 0.01,
+                    "The CDF shows the probability that inter-arrival time is less than or equal to a certain value.\n"
+                    "Applications with curves shifted to the left have more packets arriving in quick succession (lower inter-arrival times).\n"
+                    "Steeper curves indicate more consistent inter-arrival times, while flatter sections show variable timing.",
+                    ha='center', fontsize=10,
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8, edgecolor='gray'))
+
+        plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+        plt.savefig(plots_dir / 'inter_arrival_cdf.png', dpi=300)
+        plt.close()
 
 
 def main():
